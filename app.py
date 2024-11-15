@@ -51,6 +51,17 @@ def debug():
     except Exception as e:
         return jsonify({"error": f"Error en debug: {str(e)}"}), 500
 
+@app.route('/validate_token', methods=['GET'])
+def validate_token():
+    try:
+        token_info = sp.auth_manager.get_cached_token()
+        return jsonify({
+            "access_token": token_info.get("access_token") if token_info else None,
+            "token_expired": sp.auth_manager.is_token_expired(token_info) if token_info else None
+        })
+    except Exception as e:
+        return jsonify({"error": f"Error al validar el token: {str(e)}"}), 500
+
 def get_single_lyric(artist_name, track_name):
     """
     Obtener la letra de una canción desde la API Lyrics.ovh.
