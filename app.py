@@ -1,14 +1,12 @@
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, jsonify
 import requests
 import spotipy
 from flask.cli import load_dotenv
 from spotipy.oauth2 import SpotifyOAuth
-from collections import OrderedDict
-import json
-import os
 from datetime import datetime
+import os
 
-# Cargar variables de entorno
+# Load environment variables
 load_dotenv()
 
 CLIENT_ID = os.getenv('CLIENT_ID')
@@ -29,18 +27,17 @@ def require_auth(f):
     wrapped.__name__ = f.__name__
     return wrapped
 
-
-# Manejo de errores en las credenciales
+# Check for required Spotify credentials
 if not CLIENT_ID or not CLIENT_SECRET or not REDIRECT_URI or not SCOPE:
-    raise ValueError("Faltan variables de entorno necesarias para Spotify API")
+    raise ValueError("Missing environment variables for Spotify API")
 
-@require_auth
 def is_token_expired():
     expires_at = os.getenv("SPOTIPY_EXPIRES_AT")
     if not expires_at:
         return True
     return datetime.now().timestamp() > float(expires_at)
 
+# Initialize Spotipy
 if os.getenv("SPOTIPY_ACCESS_TOKEN") and not is_token_expired():
     sp = spotipy.Spotify(auth=os.getenv("SPOTIPY_ACCESS_TOKEN"))
 else:
@@ -51,18 +48,17 @@ else:
         client_secret=CLIENT_SECRET
     ))
 
-
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "El servidor está funcionando correctamente."
+    return "Server is running."
 
 @require_auth
 @app.route('/debug', methods=['GET'])
 def debug():
     """
-    Verificar configuración y variables de entorno.
+    Debug endpoint to verify server environment variables.
     """
     try:
         token_info = sp.auth_manager.get_cached_token()
@@ -75,7 +71,7 @@ def debug():
             "token_expired": sp.auth_manager.is_token_expired(token_info) if token_info else None
         })
     except Exception as e:
-        return jsonify({"error": f"Error en debug: {str(e)}"}), 500
+        return jsonify({"error": f"Error in debug: {str(e)}"}), 500
 
 @require_auth
 @app.route('/validate_token', methods=['GET'])
@@ -87,61 +83,24 @@ def validate_token():
             "token_expired": sp.auth_manager.is_token_expired(token_info) if token_info else None
         })
     except Exception as e:
-        return jsonify({"error": f"Error al validar el token: {str(e)}"}), 500
-
-
-def get_single_lyric(artist_name, track_name):
-    """
-    Obtener la letra de una canción desde la API Lyrics.ovh.
-    """
-    try:
-        r = requests.get(f"https://api.lyrics.ovh/v1/{artist_name}/{track_name}")
-        r_json = r.json()
-        if r_json.get("error") == "No lyrics found":
-            return None, f"No se encontró la letra de '{track_name}' de {artist_name}"
-        lyrics = r_json["lyrics"].replace("\n\n", "\n")
-        return lyrics, None
-    except Exception as e:
-        return None, f"Error al obtener la letra: {str(e)}"
-
-@require_auth
-@app.route('/get_song_lyric', methods=['GET'])
-def get_song_lyric():
-    """
-    Endpoint para obtener la letra de una canción.
-    """
-    artist_name = request.args.get('artist_name')
-    track_name = request.args.get('track_name')
-
-    if not artist_name or not track_name:
-        return jsonify({"error": "Los parámetros 'artist_name' y 'track_name' son obligatorios"}), 400
-
-    lyrics, error = get_single_lyric(artist_name, track_name)
-    if error:
-        return jsonify({"error": error}), 404
-
-    return jsonify({
-        "artist": artist_name,
-        "track": track_name,
-        "lyrics": lyrics
-    }), 200
+        return jsonify({"error": f"Error validating token: {str(e)}"}), 500
 
 @require_auth
 @app.route('/get_user_playlists', methods=['GET'])
 def get_user_playlists():
     """
-    Obtiene las playlists creadas por el usuario actual.
+    Retrieves playlists created by the authenticated user.
     """
     try:
         current_user = sp.current_user()
-        me = current_user.get("display_name", "Desconocido")
+        me = current_user.get("display_name", "Unknown")
         playlists = sp.current_user_playlists(limit=50)
         playlist_details = []
 
         for playlist in playlists.get('items', []):
             playlist_id = playlist['id']
             playlist_name = playlist['name']
-            user_playlist = playlist.get('owner', {}).get('display_name', "Desconocido")
+            user_playlist = playlist.get('owner', {}).get('display_name', "Unknown")
             if user_playlist != me:
                 continue
 
@@ -155,13 +114,13 @@ def get_user_playlists():
 
         return jsonify({"playlists": playlist_details}), 200
     except Exception as e:
-        return jsonify({"error": f"Error al obtener las playlists: {str(e)}"}), 500
+        return jsonify({"error": f"Error retrieving playlists: {str(e)}"}), 500
 
 @require_auth
 @app.route('/create_playlist', methods=['POST'])
 def create_playlist():
     """
-    Crea una nueva playlist para el usuario actual.
+    Creates a new playlist for the authenticated user.
     """
     data = request.json
     playlist_name = data.get('playlist_name')
@@ -169,7 +128,7 @@ def create_playlist():
     public = data.get('public', True)
 
     if not playlist_name:
-        return jsonify({"error": "El parámetro 'playlist_name' es obligatorio"}), 400
+        return jsonify({"error": "The 'playlist_name' parameter is required"}), 400
 
     try:
         user_id = sp.current_user()['id']
@@ -181,12 +140,12 @@ def create_playlist():
         )
 
         return jsonify({
-            "message": f"Playlist '{playlist_name}' creada exitosamente.",
+            "message": f"Playlist '{playlist_name}' created successfully.",
             "playlist_id": new_playlist['id'],
             "playlist_url": new_playlist['external_urls']['spotify']
         }), 201
     except Exception as e:
-        return jsonify({"error": f"Error al crear la playlist: {str(e)}"}), 500
+        return jsonify({"error": f"Error creating playlist: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
