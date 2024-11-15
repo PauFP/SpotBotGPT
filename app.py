@@ -22,6 +22,18 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
 ))
 
 app = Flask(__name__)
+@app.route('/')
+def home():
+    return "El servidor está funcionando correctamente."
+
+@app.route('/debug', methods=['GET'])
+def debug():
+    return jsonify({
+        "client_id": os.getenv("CLIENT_ID"),
+        "client_secret_present": bool(os.getenv("CLIENT_SECRET")),
+        "redirect_uri": os.getenv("REDIRECT_URI"),
+        "scope": os.getenv("SCOPE")
+    })
 
 def get_single_lyric(artist_name, track_name):
     try:
