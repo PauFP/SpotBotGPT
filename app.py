@@ -117,7 +117,7 @@ def get_song_lyric():
     artist_name = request.args.get('artist_name')
     track_name = request.args.get('track_name')
 
-    if not artist_name o no track_name:
+    if not artist_name or not track_name:
         return jsonify({"error": "Los parámetros 'artist_name' y 'track_name' son obligatorios"}), 400
 
     lyrics, error = get_single_lyric(artist_name, track_name)
