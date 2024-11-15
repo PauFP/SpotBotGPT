@@ -15,11 +15,26 @@ CLIENT_ID = os.getenv('CLIENT_ID')
 CLIENT_SECRET = os.getenv('CLIENT_SECRET')
 REDIRECT_URI = os.getenv('REDIRECT_URI')
 SCOPE = os.getenv('SCOPE')
+API_TOKEN = os.getenv("GPT_API_TOKEN")
+
+if not API_TOKEN:
+    raise ValueError("GPT_API_TOKEN is not set. Please configure it in your environment.")
+
+def require_auth(f):
+    def wrapped(*args, **kwargs):
+        token = request.headers.get("Authorization")
+        if not token or token.split(" ")[-1] != API_TOKEN:
+            return jsonify({"error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    wrapped.__name__ = f.__name__
+    return wrapped
+
 
 # Manejo de errores en las credenciales
 if not CLIENT_ID or not CLIENT_SECRET or not REDIRECT_URI or not SCOPE:
     raise ValueError("Faltan variables de entorno necesarias para Spotify API")
 
+@require_auth
 def is_token_expired():
     expires_at = os.getenv("SPOTIPY_EXPIRES_AT")
     if not expires_at:
@@ -43,6 +58,7 @@ app = Flask(__name__)
 def home():
     return "El servidor está funcionando correctamente."
 
+@require_auth
 @app.route('/debug', methods=['GET'])
 def debug():
     """
@@ -61,6 +77,7 @@ def debug():
     except Exception as e:
         return jsonify({"error": f"Error en debug: {str(e)}"}), 500
 
+@require_auth
 @app.route('/validate_token', methods=['GET'])
 def validate_token():
     try:
@@ -71,6 +88,7 @@ def validate_token():
         })
     except Exception as e:
         return jsonify({"error": f"Error al validar el token: {str(e)}"}), 500
+
 
 def get_single_lyric(artist_name, track_name):
     """
@@ -86,6 +104,7 @@ def get_single_lyric(artist_name, track_name):
     except Exception as e:
         return None, f"Error al obtener la letra: {str(e)}"
 
+@require_auth
 @app.route('/get_song_lyric', methods=['GET'])
 def get_song_lyric():
     """
@@ -107,6 +126,7 @@ def get_song_lyric():
         "lyrics": lyrics
     }), 200
 
+@require_auth
 @app.route('/get_user_playlists', methods=['GET'])
 def get_user_playlists():
     """
@@ -137,6 +157,7 @@ def get_user_playlists():
     except Exception as e:
         return jsonify({"error": f"Error al obtener las playlists: {str(e)}"}), 500
 
+@require_auth
 @app.route('/create_playlist', methods=['POST'])
 def create_playlist():
     """
