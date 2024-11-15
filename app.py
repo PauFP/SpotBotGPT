@@ -6,6 +6,7 @@ from spotipy.oauth2 import SpotifyOAuth
 from collections import OrderedDict
 import json
 import os
+from datetime import datetime
 
 # Cargar variables de entorno
 load_dotenv()
@@ -19,6 +20,22 @@ SCOPE = os.getenv('SCOPE')
 if not CLIENT_ID or not CLIENT_SECRET or not REDIRECT_URI or not SCOPE:
     raise ValueError("Faltan variables de entorno necesarias para Spotify API")
 
+def is_token_expired():
+    expires_at = os.getenv("SPOTIPY_EXPIRES_AT")
+    if not expires_at:
+        return True
+    return datetime.now().timestamp() > float(expires_at)
+
+if os.getenv("SPOTIPY_ACCESS_TOKEN") and not is_token_expired():
+    sp = spotipy.Spotify(auth=os.getenv("SPOTIPY_ACCESS_TOKEN"))
+else:
+    sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
+        scope=SCOPE,
+        redirect_uri=REDIRECT_URI,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET
+    ))
+
 # Configurar Spotipy
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     scope=SCOPE,
@@ -26,6 +43,8 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     client_id=CLIENT_ID,
     client_secret=CLIENT_SECRET
 ))
+
+print(sp.auth_manager.get_cached_token())
 
 app = Flask(__name__)
 
