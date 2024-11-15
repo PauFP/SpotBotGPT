@@ -36,15 +36,6 @@ else:
         client_secret=CLIENT_SECRET
     ))
 
-# Configurar Spotipy
-sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-    scope=SCOPE,
-    redirect_uri=REDIRECT_URI,
-    client_id=CLIENT_ID,
-    client_secret=CLIENT_SECRET
-))
-
-print(sp.auth_manager.get_cached_token())
 
 app = Flask(__name__)
 
