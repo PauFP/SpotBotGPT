@@ -2,11 +2,16 @@ from flask import Flask, request, Response, jsonify
 import requests
 import spotipy
 from flask.cli import load_dotenv
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import SpotifyOAuth, CacheFileHandler
 from collections import OrderedDict
 from datetime import datetime
 import json
 import os
+import logging
+
+# Configuración de logging para depuración
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Cargar variables de entorno
 load_dotenv()
@@ -45,16 +50,28 @@ def is_token_expired():
         return True
     return datetime.now().timestamp() > float(expires_at)
 
+# Configurar el manejador de caché para Spotipy
+cache_handler = CacheFileHandler(cache_path=".cache")
+
 # Inicializar Spotipy con gestión de tokens
 if os.getenv("SPOTIPY_ACCESS_TOKEN") and not is_token_expired():
+    logger.info("Usando SPOTIPY_ACCESS_TOKEN desde variables de entorno.")
     sp = spotipy.Spotify(auth=os.getenv("SPOTIPY_ACCESS_TOKEN"))
 else:
-    sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
+    logger.info("Inicializando SpotifyOAuth para obtener un nuevo token.")
+    sp_oauth = SpotifyOAuth(
         scope=SCOPE,
         redirect_uri=REDIRECT_URI,
         client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET
-    ))
+        client_secret=CLIENT_SECRET,
+        cache_handler=cache_handler,
+        show_dialog=True  # Establecer en False para evitar prompts interactivos
+    )
+    token_info = sp_oauth.get_cached_token()
+    if not token_info:
+        logger.error("No se encontró un token válido en la caché. Asegúrate de que la autenticación está correctamente configurada.")
+        raise RuntimeError("No se encontró un token válido. Necesitas autenticarte.")
+    sp = spotipy.Spotify(auth_manager=sp_oauth)
 
 app = Flask(__name__)
 
@@ -79,6 +96,7 @@ def debug():
             "token_expired": is_token_expired()
         })
     except Exception as e:
+        logger.exception("Error en debug.")
         return jsonify({"error": f"Error en debug: {str(e)}"}), 500
 
 @app.route('/validate_token', methods=['GET'])
@@ -95,9 +113,13 @@ def validate_token():
             "token_expired": expired
         })
     except Exception as e:
+        logger.exception("Error validando el token.")
         return jsonify({"error": f"Error validando el token: {str(e)}"}), 500
 
 def get_single_lyric(artist_name, track_name):
+    """
+    Obtener la letra de una canción desde la API Lyrics.ovh.
+    """
     try:
         r = requests.get(f"https://api.lyrics.ovh/v1/{artist_name}/{track_name}")
         r_json = r.json()
@@ -106,6 +128,7 @@ def get_single_lyric(artist_name, track_name):
         lyrics = r_json["lyrics"].replace("\n\n", "\n")
         return lyrics, None
     except Exception as e:
+        logger.exception("Error al obtener la letra.")
         return None, f"Error al obtener la letra: {str(e)}"
 
 @app.route('/get_song_lyric', methods=['GET'])
@@ -140,28 +163,20 @@ def get_user_playlists():
     Obtiene las playlists creadas por el usuario actual.
     """
     try:
-        # Obtener información del usuario actual
         current_user = sp.current_user()
         me = current_user.get("display_name", "Desconocido")
-
-        # Obtener todas las playlists del usuario
         playlists = sp.current_user_playlists(limit=50)
         playlist_details = []
 
         for playlist in playlists.get('items', []):
             playlist_id = playlist['id']
             playlist_name = playlist['name']
-
-            # Verificar si 'owner' está presente y filtrar por el usuario actual
             user_playlist = playlist.get('owner', {}).get('display_name', "Desconocido")
             if user_playlist != me:
-                continue  # Saltar playlists que no sean del usuario actual
+                continue
 
-            # Obtener las canciones de la playlist
             tracks = sp.playlist_items(playlist_id)
             track_names = [track['track']['name'] for track in tracks.get('items', [])]
-
-            # Añadir la playlist a los detalles
             playlist_details.append({
                 "id": playlist_id,
                 "name": playlist_name,
@@ -169,8 +184,8 @@ def get_user_playlists():
             })
 
         return jsonify({"playlists": playlist_details}), 200
-
     except Exception as e:
+        logger.exception("Error al obtener las playlists.")
         return jsonify({"error": f"Error al obtener las playlists: {str(e)}"}), 500
 
 @app.route('/add_tracks_to_playlist', methods=['POST'])
@@ -212,6 +227,7 @@ def add_tracks_to_playlist():
         }), 200
 
     except Exception as e:
+        logger.exception("Error al añadir canciones a la playlist.")
         return jsonify({"error": f"Error al añadir canciones a la playlist: {str(e)}"}), 500
 
 @app.route('/create_playlist', methods=['POST'])
@@ -246,6 +262,7 @@ def create_playlist():
             "playlist_url": new_playlist['external_urls']['spotify']
         }), 201
     except Exception as e:
+        logger.exception("Error al crear la playlist.")
         return jsonify({"error": f"Error al crear la playlist: {str(e)}"}), 500
 
 @app.route('/get_playlist_by_name', methods=['GET'])
@@ -295,7 +312,9 @@ def get_playlist_by_name():
             "tracks": track_details
         }), 200
     except Exception as e:
+        logger.exception("Error al obtener la playlist.")
         return jsonify({"error": f"Error al obtener la playlist: {str(e)}"}), 500
 
 if __name__ == '__main__':
+    # Configuración para escuchar en el puerto proporcionado por Render
     app.run(debug=True)
