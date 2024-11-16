@@ -1,8 +1,7 @@
 from flask import Flask, request, Response, jsonify
 import requests
 import spotipy
-from flask.cli import load_dotenv
-from spotipy.oauth2 import SpotifyOAuth, CacheFileHandler
+from spotipy.oauth2 import SpotifyOAuth
 from collections import OrderedDict
 from datetime import datetime
 import json
@@ -14,19 +13,25 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Cargar variables de entorno
+from flask.cli import load_dotenv
+
 load_dotenv()
 
 # Variables de configuración de Spotify
 CLIENT_ID = os.getenv('CLIENT_ID')
 CLIENT_SECRET = os.getenv('CLIENT_SECRET')
-REDIRECT_URI = os.getenv('REDIRECT_URI')
+REDIRECT_URI = os.getenv('REDIRECT_URI')  # Debe coincidir con la registrada en Spotify
 SCOPE = os.getenv('SCOPE')
+
+# Refresh Token de Spotify
+REFRESH_TOKEN = os.getenv('SPOTIPY_REFRESH_TOKEN')
 
 # Token API para autenticación
 API_TOKEN = os.getenv("GPT_API_TOKEN")
 
 if not API_TOKEN:
     raise ValueError("GPT_API_TOKEN no está configurado. Por favor, configúralo en tus variables de entorno.")
+
 
 def require_auth(f):
     def wrapped(*args, **kwargs):
@@ -37,47 +42,56 @@ def require_auth(f):
         if token != API_TOKEN:
             return jsonify({"error": "No autorizado"}), 401
         return f(*args, **kwargs)
+
     wrapped.__name__ = f.__name__
     return wrapped
+
 
 # Verificar que todas las variables de entorno necesarias están presentes
 if not CLIENT_ID or not CLIENT_SECRET or not REDIRECT_URI or not SCOPE:
     raise ValueError("Faltan variables de entorno necesarias para la API de Spotify.")
 
-def is_token_expired():
-    expires_at = os.getenv("SPOTIPY_EXPIRES_AT")
-    if not expires_at:
-        return True
-    return datetime.now().timestamp() > float(expires_at)
+if not REFRESH_TOKEN:
+    raise ValueError("SPOTIPY_REFRESH_TOKEN no está configurado. Por favor, configúralo en tus variables de entorno.")
 
-# Configurar el manejador de caché para Spotipy
-cache_handler = CacheFileHandler(cache_path=".cache")
+# Inicializar SpotifyOAuth sin caché
+sp_oauth = SpotifyOAuth(
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET,
+    redirect_uri=REDIRECT_URI,
+    scope=SCOPE,
+    cache_path=None  # Evita usar caché
+)
 
-# Inicializar Spotipy con gestión de tokens
-if os.getenv("SPOTIPY_ACCESS_TOKEN") and not is_token_expired():
-    logger.info("Usando SPOTIPY_ACCESS_TOKEN desde variables de entorno.")
-    sp = spotipy.Spotify(auth=os.getenv("SPOTIPY_ACCESS_TOKEN"))
-else:
-    logger.info("Inicializando SpotifyOAuth para obtener un nuevo token.")
-    sp_oauth = SpotifyOAuth(
-        scope=SCOPE,
-        redirect_uri=REDIRECT_URI,
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
-        cache_handler=cache_handler,
-        show_dialog=True  # Establecer en False para evitar prompts interactivos
-    )
-    token_info = sp_oauth.get_cached_token()
-    if not token_info:
-        logger.error("No se encontró un token válido en la caché. Asegúrate de que la autenticación está correctamente configurada.")
-        raise RuntimeError("No se encontró un token válido. Necesitas autenticarte.")
-    sp = spotipy.Spotify(auth_manager=sp_oauth)
+
+# Función para obtener un nuevo Access Token usando el Refresh Token
+def get_access_token():
+    try:
+        token_info = sp_oauth.refresh_access_token(REFRESH_TOKEN)
+        access_token = token_info['access_token']
+        expires_at = token_info['expires_at']
+        logger.info("Access Token obtenido y actualizado correctamente.")
+        return access_token, expires_at
+    except Exception as e:
+        logger.error(f"Error al refrescar el token de acceso: {str(e)}")
+        return None, None
+
+
+# Inicializar el Access Token
+access_token, expires_at = get_access_token()
+if not access_token:
+    raise RuntimeError("No se pudo obtener el Access Token. Revisa el Refresh Token y las credenciales.")
+
+# Inicializar Spotipy con el Access Token
+sp = spotipy.Spotify(auth=access_token)
 
 app = Flask(__name__)
+
 
 @app.route('/')
 def home():
     return "El servidor está funcionando correctamente."
+
 
 @app.route('/debug', methods=['GET'])
 @require_auth
@@ -86,18 +100,30 @@ def debug():
     Endpoint de depuración para verificar las variables de entorno y el estado del token.
     """
     try:
-        token_info = sp.auth_manager.get_cached_token()
+        current_time = datetime.now().timestamp()
+        if current_time > expires_at:
+            # Token expirado, refrescar
+            logger.info("Access Token expirado, refrescando...")
+            new_access_token, new_expires_at = get_access_token()
+            if not new_access_token:
+                return jsonify({"error": "No se pudo refrescar el Access Token."}), 500
+            global sp, access_token, expires_at
+            access_token = new_access_token
+            expires_at = new_expires_at
+            sp = spotipy.Spotify(auth=access_token)
+
         return jsonify({
             "client_id": CLIENT_ID,
             "client_secret_present": bool(CLIENT_SECRET),
             "redirect_uri": REDIRECT_URI,
             "scope": SCOPE,
-            "access_token": token_info.get("access_token") if token_info else None,
-            "token_expired": is_token_expired()
+            "access_token": access_token,
+            "token_expired": current_time > expires_at
         })
     except Exception as e:
         logger.exception("Error en debug.")
         return jsonify({"error": f"Error en debug: {str(e)}"}), 500
+
 
 @app.route('/validate_token', methods=['GET'])
 @require_auth
@@ -106,15 +132,27 @@ def validate_token():
     Valida si el token de Spotify está activo o ha expirado.
     """
     try:
-        token_info = sp.auth_manager.get_cached_token()
-        expired = is_token_expired()
+        current_time = datetime.now().timestamp()
+        token_expired = current_time > expires_at
+
+        if token_expired:
+            logger.info("Access Token expirado, refrescando...")
+            new_access_token, new_expires_at = get_access_token()
+            if not new_access_token:
+                return jsonify({"error": "No se pudo refrescar el Access Token."}), 500
+            global sp, access_token, expires_at
+            access_token = new_access_token
+            expires_at = new_expires_at
+            sp = spotipy.Spotify(auth=access_token)
+
         return jsonify({
-            "access_token": token_info.get("access_token") if token_info else None,
-            "token_expired": expired
+            "access_token": access_token,
+            "token_expired": token_expired
         })
     except Exception as e:
         logger.exception("Error validando el token.")
-        return jsonify({"error": f"Error validando el token: {str(e)}"}), 500
+        return jsonify({"error": f"Error al validar el token: {str(e)}"}), 500
+
 
 def get_single_lyric(artist_name, track_name):
     """
@@ -130,6 +168,7 @@ def get_single_lyric(artist_name, track_name):
     except Exception as e:
         logger.exception("Error al obtener la letra.")
         return None, f"Error al obtener la letra: {str(e)}"
+
 
 @app.route('/get_song_lyric', methods=['GET'])
 @require_auth
@@ -155,6 +194,7 @@ def get_song_lyric():
 
     response_json = json.dumps(response_data, ensure_ascii=False, indent=2)
     return Response(response_json, content_type="application/json; charset=utf-8")
+
 
 @app.route('/get_user_playlists', methods=['GET'])
 @require_auth
@@ -188,6 +228,7 @@ def get_user_playlists():
         logger.exception("Error al obtener las playlists.")
         return jsonify({"error": f"Error al obtener las playlists: {str(e)}"}), 500
 
+
 @app.route('/add_tracks_to_playlist', methods=['POST'])
 @require_auth
 def add_tracks_to_playlist():
@@ -216,7 +257,8 @@ def add_tracks_to_playlist():
             if tracks:
                 track_uris.append(tracks[0]['uri'])
             else:
-                return jsonify({"error": f"No se encontró la canción '{track_name}' con el artista '{artist_name}'"}), 404
+                return jsonify(
+                    {"error": f"No se encontró la canción '{track_name}' con el artista '{artist_name}'"}), 404
 
         # Añadir las canciones a la playlist
         sp.playlist_add_items(playlist_id, track_uris)
@@ -229,6 +271,7 @@ def add_tracks_to_playlist():
     except Exception as e:
         logger.exception("Error al añadir canciones a la playlist.")
         return jsonify({"error": f"Error al añadir canciones a la playlist: {str(e)}"}), 500
+
 
 @app.route('/create_playlist', methods=['POST'])
 @require_auth
@@ -264,6 +307,7 @@ def create_playlist():
     except Exception as e:
         logger.exception("Error al crear la playlist.")
         return jsonify({"error": f"Error al crear la playlist: {str(e)}"}), 500
+
 
 @app.route('/get_playlist_by_name', methods=['GET'])
 @require_auth
@@ -315,6 +359,8 @@ def get_playlist_by_name():
         logger.exception("Error al obtener la playlist.")
         return jsonify({"error": f"Error al obtener la playlist: {str(e)}"}), 500
 
+
 if __name__ == '__main__':
     # Configuración para escuchar en el puerto proporcionado por Render
-    app.run(debug=True)
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
