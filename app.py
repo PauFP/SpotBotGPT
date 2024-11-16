@@ -20,7 +20,8 @@ load_dotenv()
 # Variables de configuración de Spotify
 CLIENT_ID = os.getenv('CLIENT_ID')
 CLIENT_SECRET = os.getenv('CLIENT_SECRET')
-REDIRECT_URI = os.getenv('REDIRECT_URI')  # Debe coincidir con la registrada en Spotify
+REDIRECT_URI = os.getenv(
+    'REDIRECT_URI')  # Debe ser la URL de tu aplicación en Render, por ejemplo: https://spotbotgpt.onrender.com/callback
 SCOPE = os.getenv('SCOPE')
 
 # Refresh Token de Spotify
@@ -100,16 +101,15 @@ def debug():
     Endpoint de depuración para verificar las variables de entorno y el estado del token.
     """
     try:
+        global sp, access_token, expires_at  # Declaración global al inicio
+
         current_time = datetime.now().timestamp()
         if current_time > expires_at:
             # Token expirado, refrescar
             logger.info("Access Token expirado, refrescando...")
-            new_access_token, new_expires_at = get_access_token()
-            if not new_access_token:
+            access_token, expires_at = get_access_token()
+            if not access_token:
                 return jsonify({"error": "No se pudo refrescar el Access Token."}), 500
-            global sp, access_token, expires_at
-            access_token = new_access_token
-            expires_at = new_expires_at
             sp = spotipy.Spotify(auth=access_token)
 
         return jsonify({
@@ -132,17 +132,16 @@ def validate_token():
     Valida si el token de Spotify está activo o ha expirado.
     """
     try:
+        global sp, access_token, expires_at  # Declaración global al inicio
+
         current_time = datetime.now().timestamp()
         token_expired = current_time > expires_at
 
         if token_expired:
             logger.info("Access Token expirado, refrescando...")
-            new_access_token, new_expires_at = get_access_token()
-            if not new_access_token:
+            access_token, expires_at = get_access_token()
+            if not access_token:
                 return jsonify({"error": "No se pudo refrescar el Access Token."}), 500
-            global sp, access_token, expires_at
-            access_token = new_access_token
-            expires_at = new_expires_at
             sp = spotipy.Spotify(auth=access_token)
 
         return jsonify({
