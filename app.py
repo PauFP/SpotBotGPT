@@ -287,17 +287,55 @@ def search():
         logger.exception("search")
         return jsonify({"error": str(e)}), 500
 
+# ───────────────────────── 8. RECOMENDACIONES ────────────────
 @app.route("/recommendations")
 @require_auth
 def recommendations():
     ensure_token()
     try:
-        parms = {k: v for k, v in request.args.items()}
-        limit = int(parms.pop("limit", 20))
-        data  = sp.recommendations(limit=limit, **parms)
+        # 1) Limite
+        limit = int(request.args.get("limit", 20))
+
+        # 2) Semillas ─ acepta 3 formatos:
+        #    a) lista JSON  → seed_tracks=["id1","id2"]
+        #    b) repetido    → seed_tracks=id1&seed_tracks=id2
+        #    c) CSV simple  → seed_tracks=id1,id2
+        def _parse_seed(param):
+            raw = request.args.getlist(param)            # a) / b)
+            if not raw:
+                return None
+            if len(raw) == 1:                            # puede ser JSON o CSV
+                txt = raw[0]
+                if txt.startswith("["):
+                    try:
+                        return json.loads(txt)
+                    except Exception:
+                        pass
+                return txt.split(",")                    # CSV
+            return raw                                   # repetido
+
+        seeds = {
+            "seed_tracks" : _parse_seed("seed_tracks"),
+            "seed_artists": _parse_seed("seed_artists"),
+            "seed_genres" : _parse_seed("seed_genres"),
+        }
+        # filtra los None
+        seeds = {k: v for k, v in seeds.items() if v}
+
+        # 3) Cumple la regla: máx. 5 semillas en total
+        used = sum(len(v) for v in seeds.values())
+        if used == 0:
+            return jsonify({"error": "al menos una semilla"}), 400
+        if used > 5:
+            return jsonify({"error": "máx. 5 semillas en total"}), 400
+
+        data = sp.recommendations(limit=limit, **seeds)
         return jsonify(data)
+
     except Exception as e:
+        logger.exception("recommendations")
         return jsonify({"error": str(e)}), 500
+
 
 # ───────────────────────── 6. ARTISTAS & AUDIO ───────────────
 @app.route("/artists/<artist_id>")
