@@ -147,17 +147,24 @@ def get_song_lyric():
 def get_top_items(item_type):
     if item_type not in ("artists", "tracks"):
         return jsonify({"error": "item_type debe ser artists o tracks"}), 400
+
     ensure_token()
     try:
         time_range = request.args.get("time_range", "medium_term")
         limit      = int(request.args.get("limit", 20))
         offset     = int(request.args.get("offset", 0))
-        data = sp.current_user_top_items(item_type, time_range=time_range,
-                                         limit=limit, offset=offset)
+
+        if item_type == "artists":
+            data = sp.current_user_top_artists(time_range=time_range,
+                                               limit=limit, offset=offset)
+        else:  # tracks
+            data = sp.current_user_top_tracks(time_range=time_range,
+                                              limit=limit, offset=offset)
         return jsonify(data)
     except Exception as e:
         logger.exception("top items")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/me/player/recently-played")
 @require_auth
