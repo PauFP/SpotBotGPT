@@ -611,11 +611,15 @@ def add_tracks_legacy():
     track_names = data.get("track_names")
     if not playlist_id or not track_names:
         return jsonify({"error": "playlist_id y track_names obligatorios"}), 400
+
+    # Cabecera mutable: solo pasamos Authorization
+    hdr = {"Authorization": request.headers.get("Authorization", "")}
+
     with app.test_request_context(
         f"/playlists/{playlist_id}/tracks/from-names",
         method="POST",
         json=data,
-        headers=request.headers
+        headers=hdr           # ←  mutable dict
     ):
         return add_tracks_by_name(playlist_id)
 
