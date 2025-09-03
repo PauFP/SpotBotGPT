@@ -7,12 +7,13 @@ Versión alineada con el YAML 2.1.0 de 2025-05-08
 from __future__ import annotations
 
 # ─────────────────────────  STD LIB  ──────────────────────────
-import os, json, logging, requests
+import os, json, logging, re
 from datetime import datetime
 from functools import wraps
 from collections import OrderedDict
 
 # ─────────────────────────  3RD PARTY  ────────────────────────
+import requests
 from flask import Flask, request, jsonify, Response
 from flask.cli import load_dotenv
 import spotipy
@@ -50,6 +51,7 @@ def refresh_access_token() -> tuple[str, int]:
     """Devuelve (access_token, expires_at_epoch)."""
     token_info = sp_oauth.refresh_access_token(REFRESH_TOKEN)
     logger.info("Access-Token Spotify refrescado.")
+    # Nota: si Spotify rota el refresh_token, podrías guardarlo aquí (token_info.get("refresh_token"))
     return token_info["access_token"], token_info["expires_at"]
 
 access_token, expires_at = refresh_access_token()
@@ -90,6 +92,13 @@ def track_search_to_uris(track_names:list[str], artist:str|None=None) -> list[st
             raise ValueError(f"No se encontró '{name}'{' de '+artist if artist else ''}")
         uris.append(items[0]["uri"])
     return uris
+
+def _normalize_playlist_id(pid: str) -> str:
+    """Acepta ID, URI o URL y devuelve siempre el ID canónico."""
+    if pid.startswith("spotify:playlist:"):
+        return pid.rsplit(":", 1)[-1]
+    m = re.search(r"playlist/([A-Za-z0-9]+)", pid)
+    return m.group(1) if m else pid
 
 # ───────────────────────── 1. HEALTH & DEBUG ──────────────────
 @app.route("/")
@@ -191,7 +200,7 @@ def saved_tracks():
             offset = int(request.args.get("offset", 0))
             return jsonify(sp.current_user_saved_tracks(limit=limit, offset=offset))
 
-        ids = request.json.get("ids", [])
+        ids = request.json.get("ids", []) if request.is_json else []
         if not ids:
             return jsonify({"error": "ids obligatorio"}), 400
         if request.method == "PUT":
@@ -213,7 +222,7 @@ def saved_albums():
             offset = int(request.args.get("offset", 0))
             return jsonify(sp.current_user_saved_albums(limit=limit, offset=offset))
 
-        ids = request.json.get("ids", [])
+        ids = request.json.get("ids", []) if request.is_json else []
         if not ids:
             return jsonify({"error": "ids obligatorio"}), 400
         if request.method == "PUT":
@@ -274,15 +283,15 @@ def alias_saved_albums():
 @app.route("/search")
 @require_auth
 def search():
-    q    = request.args.get("q")
-    type = request.args.get("type")
-    if not q or not type:
+    q      = request.args.get("q")
+    type_  = request.args.get("type")  # evita sombrear built-in
+    if not q or not type_:
         return jsonify({"error": "q y type son obligatorios"}), 400
     ensure_token()
     try:
         limit  = int(request.args.get("limit", 20))
         offset = int(request.args.get("offset", 0))
-        return jsonify(sp.search(q=q, type=type, limit=limit, offset=offset))
+        return jsonify(sp.search(q=q, type=type_, limit=limit, offset=offset))
     except Exception as e:
         logger.exception("search")
         return jsonify({"error": str(e)}), 500
@@ -371,7 +380,7 @@ def audio_features(track_id):
 def audio_analysis(track_id):
     ensure_token()
     try:
-        return jsonify(sp._get(f"audio-analysis/{track_id}"))
+        return jsonify(sp.audio_analysis(track_id))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -410,6 +419,7 @@ def create_playlist(user_id):
 @require_auth
 def playlist_details_edit(playlist_id):
     ensure_token()
+    playlist_id = _normalize_playlist_id(playlist_id)
     try:
         if request.method == "GET":
             return jsonify(sp.playlist(playlist_id))
@@ -428,6 +438,7 @@ def playlist_details_edit(playlist_id):
 @require_auth
 def playlist_tracks(playlist_id):
     ensure_token()
+    playlist_id = _normalize_playlist_id(playlist_id)
     try:
         if request.method == "GET":
             limit  = int(request.args.get("limit", 100))
@@ -473,6 +484,7 @@ def playlist_tracks(playlist_id):
 @require_auth
 def follow_playlist(playlist_id):
     ensure_token()
+    playlist_id = _normalize_playlist_id(playlist_id)
     try:
         if request.method == "PUT":
             public = request.json.get("public", False) if request.is_json else False
@@ -494,10 +506,51 @@ def add_tracks_by_name(playlist_id):
         return jsonify({"error": "track_names obligatorio"}), 400
     try:
         ensure_token()
+        playlist_id = _normalize_playlist_id(playlist_id)
         uris = track_search_to_uris(names, artist)
         sp.playlist_add_items(playlist_id, uris)
         return jsonify({"added_tracks": names})
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 404
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# 7-QUINQUIES.  Buscar playlist por NOMBRE y listar tracks
+@app.route("/playlists/by-name/<name>/tracks")
+@require_auth
+def playlist_items_by_name(name):
+    ensure_token()
+    name_cf = name.casefold()
+    user_id = sp.me()["id"]
+
+    limit_page, offset = 50, 0
+    target_pl = None
+    try:
+        while True:
+            page = sp.current_user_playlists(limit=limit_page, offset=offset)
+            for pl in page.get("items", []):
+                if pl.get("name", "").casefold() == name_cf:
+                    # Prioriza la del propietario actual si hay duplicados
+                    if (not target_pl) or (pl.get("owner", {}).get("id") == user_id):
+                        target_pl = pl
+            if page.get("next"):
+                offset += limit_page
+            else:
+                break
+
+        if not target_pl:
+            return jsonify({"error": f"playlist '{name}' no encontrada en tu cuenta"}), 404
+
+        pid = target_pl["id"]
+        limit_q  = int(request.args.get("limit", 100))
+        offset_q = int(request.args.get("offset", 0))
+        items = sp.playlist_items(pid, limit=limit_q, offset=offset_q)
+        return jsonify(items)
+    except spotipy.SpotifyException as e:
+        logger.exception("playlist_items_by_name - SpotifyException")
+        return jsonify({"error": str(e)}), 502
+    except Exception as e:
+        logger.exception("playlist_items_by_name - Exception")
         return jsonify({"error": str(e)}), 500
 
 # ───────────────────────── 8. FOLLOWING (ARTIST/USER) ────────
@@ -564,11 +617,11 @@ def alias_create_playlist():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# (FIX) PATCH sin mutar request.method (usa test_request_context → PUT)
 @app.route("/playlists/<playlist_id>", methods=["PATCH"])
 @require_auth
 def alias_patch_playlist(playlist_id):
     body = request.get_json(silent=True) or {}
-    # Reutiliza el handler PUT sin mutar request.method (read-only)
     with app.test_request_context(
         f"/playlists/{playlist_id}",
         method="PUT",
@@ -576,7 +629,6 @@ def alias_patch_playlist(playlist_id):
         headers={"Authorization": request.headers.get("Authorization", "")}
     ):
         return playlist_details_edit(playlist_id)
-
 
 @app.route("/playlists/<playlist_id>/remove_tracks", methods=["DELETE"])
 @require_auth
@@ -627,7 +679,7 @@ def add_tracks_legacy():
         f"/playlists/{playlist_id}/tracks/from-names",
         method="POST",
         json=data,
-        headers=hdr           # ←  mutable dict
+        headers=hdr
     ):
         return add_tracks_by_name(playlist_id)
 
