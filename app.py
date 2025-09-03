@@ -357,6 +357,23 @@ def get_playlist_by_name():
     except Exception as e:
         logger.exception("Error al obtener la playlist.")
         return jsonify({"error": f"Error al obtener la playlist: {str(e)}"}), 500
+        
+@app.route("/get_playlist_by_id")
+@require_auth
+def get_playlist_by_id():
+    pid = request.args.get("playlist_id")
+    if not pid:
+        return jsonify({"error": "playlist_id obligatorio"}), 400
+    try:
+        ensure_token()
+        pid = _normalize_playlist_id(pid)
+        limit  = int(request.args.get("limit", 100))
+        offset = int(request.args.get("offset", 0))
+        items = sp.playlist_items(pid, limit=limit, offset=offset)
+        return jsonify(items)
+    except Exception as e:
+        logger.exception("get_playlist_by_id")
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':
