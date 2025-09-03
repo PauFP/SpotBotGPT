@@ -567,8 +567,16 @@ def alias_create_playlist():
 @app.route("/playlists/<playlist_id>", methods=["PATCH"])
 @require_auth
 def alias_patch_playlist(playlist_id):
-    request.method = "PUT"          # reutilizamos PUT handler
-    return playlist_details_edit(playlist_id)
+    body = request.get_json(silent=True) or {}
+    # Reutiliza el handler PUT sin mutar request.method (read-only)
+    with app.test_request_context(
+        f"/playlists/{playlist_id}",
+        method="PUT",
+        json=body,
+        headers={"Authorization": request.headers.get("Authorization", "")}
+    ):
+        return playlist_details_edit(playlist_id)
+
 
 @app.route("/playlists/<playlist_id>/remove_tracks", methods=["DELETE"])
 @require_auth
